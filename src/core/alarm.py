@@ -12,29 +12,150 @@ Handles alarm triggering, weekday scheduling, and playback management with:
 import datetime
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from ..api.spotify import (get_access_token, get_device_id, set_volume,
-                           start_playback)
+from ..api.spotify import (get_access_token, get_current_playback,
+                           get_device_id, set_volume, start_playback)
 from ..config import load_config
 from ..constants import ALARM_TRIGGER_WINDOW_MINUTES
 from ..utils.logger import setup_logger
 from ..utils.thread_safety import config_transaction
 from ..utils.timezone import get_local_timezone
 from .alarm_logging import AlarmProbeContext, log_alarm_probe
-from .snooze import start_snooze_session
+from .snooze import (MUTE_THRESHOLD, _device_matches, start_snooze_session,
+                     trigger_snooze)
 
 # Get logger for alarm module
 logger = setup_logger(__name__)
 LOCAL_TZ = get_local_timezone()
 
+# Fade-in silence detection: between volume steps the player is read once; a
+# pause or (post-audible) mute on the alarm device counts as the user hitting
+# the snooze button. One silenced read holds the ramp (so the next step does
+# not un-mute the device again), a second consecutive read confirms it.
+FADE_STEP_SECONDS = 5
+FADE_SILENCE_CONFIRM_SECONDS = 3
+FADE_SILENCE_CONFIRM_READS = 2
+
 def log(message: str) -> None:
     """Log message using centralized logger.
-    
+
     Args:
         message: Message to log
     """
     logger.info(message)
+
+
+def _fade_playback_verdict(
+    token: str,
+    device_id: str,
+    device_name: str,
+    seen_playing: bool,
+    heard_audible: bool,
+) -> Tuple[str, bool, bool]:
+    """Read the player once mid-fade and classify it.
+
+    Returns ``(verdict, seen_playing, heard_audible)`` with verdict one of:
+        "silenced" -> the alarm device was paused (after having been seen
+                      playing) or muted (after having been heard audible —
+                      the hardware snooze button mutes)
+        "active"   -> our alarm is (still) playing
+        "unknown"  -> no usable signal (fetch error, empty or foreign read,
+                      or a silence for which the latch below hasn't confirmed
+                      real playback yet)
+
+    Both silence paths are gated on a latch, because right after playback
+    starts /me/player reads are often stale: ``seen_playing`` sticks once the
+    device reported ``is_playing`` (until then a paused read is likely the
+    pre-start transport state, not a button press), and ``heard_audible``
+    sticks once the device reported a volume above ``MUTE_THRESHOLD`` (until
+    then a low-volume read may echo the 0% fade preset). Empty/foreign reads
+    are ignored (unlike in the armed snooze monitor) because seconds after a
+    verified playback start they are almost always stale; the monitor still
+    catches real takeovers once the fade is over.
+    """
+    try:
+        playback = get_current_playback(token)
+    except Exception as exc:
+        logger.debug("Fade silence check failed: %s", exc)
+        return "unknown", seen_playing, heard_audible
+    if not playback:
+        return "unknown", seen_playing, heard_audible
+    if not _device_matches(playback, device_id, device_name):
+        return "unknown", seen_playing, heard_audible
+    if not bool(playback.get("is_playing")):
+        if seen_playing:
+            return "silenced", seen_playing, heard_audible
+        return "unknown", seen_playing, heard_audible
+    volume = (playback.get("device") or {}).get("volume_percent")
+    if volume is not None and volume > MUTE_THRESHOLD:
+        return "active", True, True
+    if heard_audible and volume is not None:
+        return "silenced", True, heard_audible
+    return "active", True, heard_audible
+
+
+def _run_fade_in(
+    token: str,
+    device_id: str,
+    device_name: str,
+    target_volume: int,
+    probe: Optional[AlarmProbeContext],
+    detect_silence: bool = True,
+) -> bool:
+    """Ramp the alarm volume in steps, watching for a pause/mute in between.
+
+    Returns True when the user silenced the alarm device mid-fade (pause or
+    hardware mute): the ramp stops right away so the next volume step does not
+    un-mute the device again, and the caller turns the press into a snooze.
+
+    ``detect_silence`` must only be True while a snooze session is armed:
+    aborting the ramp is only safe when the snooze monitor exists to resume
+    playback later — without a session the old always-ramp behavior is the
+    only recovery path the alarm has.
+    """
+    if target_volume <= 0:
+        return False
+
+    fade_step = max(1, min(5, target_volume))
+    volumes: List[int] = list(range(fade_step, target_volume, fade_step))
+    volumes.append(target_volume)
+
+    seen_playing = False
+    heard_audible = False
+    silence_streak = 0
+    idx = 0
+    while idx < len(volumes):
+        if silence_streak:
+            time.sleep(FADE_SILENCE_CONFIRM_SECONDS)
+        else:
+            time.sleep(1 if idx == 0 else FADE_STEP_SECONDS)
+
+        if detect_silence:
+            verdict, seen_playing, heard_audible = _fade_playback_verdict(
+                token, device_id, device_name, seen_playing, heard_audible
+            )
+            if verdict == "silenced":
+                silence_streak += 1
+                if silence_streak >= FADE_SILENCE_CONFIRM_READS:
+                    log("💤 Alarm silenced during fade-in - handing over to snooze")
+                    return True
+                continue  # hold this step and re-read shortly to confirm
+            silence_streak = 0
+
+        v = volumes[idx]
+        if set_volume(token, v, device_id):
+            log(f"🎚️ Volume increased to {v}%")
+            log_alarm_probe(
+                probe,
+                "execute_fade_step",
+                extra={"volume": v, "step_index": idx, "total_steps": len(volumes)},
+            )
+        else:
+            log(f"⚠️ Volume set attempt to {v}% - Spotify API refused value")
+        idx += 1
+
+    return False
 
 def execute_alarm(
     *,
@@ -267,36 +388,16 @@ def execute_alarm(
                 shuffle=shuffle
             )
             log("▶️ Playback started at 0% volume (Fade-In active)")
-            try:
-                if target_volume > 0:
-                    fade_step = max(1, min(5, target_volume))
-                    volumes: List[int] = []
-                    current = fade_step
-                    while current < target_volume:
-                        volumes.append(current)
-                        current += fade_step
-                    volumes.append(target_volume)
-
-                    for idx, v in enumerate(volumes):
-                        time.sleep(1 if idx == 0 else 5)
-                        if set_volume(token, v, device_id):
-                            log(f"🎚️ Volume increased to {v}%")
-                            log_alarm_probe(
-                                probe,
-                                "execute_fade_step",
-                                extra={"volume": v, "step_index": idx, "total_steps": len(volumes)},
-                            )
-                        else:
-                            log(f"⚠️ Volume set attempt to {v}% - Spotify API refused value")
-            except Exception as e:
-                log(f"❌ Error during fade-in: {e}")
-                log_alarm_probe(probe, "execute_fade_error", extra={"error": str(e)}, force=True)
 
         log("✅ Playback started.")
         log_alarm_probe(probe, "execute_playback_started", extra={"fade_in": fade_in})
 
-        # Snooze-on-pause: while the alarm is playing, a pause on the alarm
-        # device (e.g. the Argon/Forte hardware button) should act as snooze.
+        # Snooze-on-pause: while the alarm is playing, silencing the alarm
+        # device (a pause, or the Argon/Forte hardware button which mutes)
+        # acts as snooze. Armed BEFORE the fade-in so a button press during
+        # the ramp already has a session to land in and the monitor's settle
+        # window starts at the real playback start.
+        snooze_armed = False
         if config.get("snooze_enabled", True):
             try:
                 snooze_armed = start_snooze_session(
@@ -326,6 +427,27 @@ def execute_alarm(
                 )
         else:
             log_alarm_probe(probe, "execute_snooze_disabled", force=True)
+
+        if fade_in:
+            fade_silenced = False
+            try:
+                # Silence detection only while a snooze session is armed:
+                # without one, nothing would ever resume an aborted ramp.
+                fade_silenced = _run_fade_in(
+                    token, device_id, device_name, target_volume, probe,
+                    detect_silence=snooze_armed,
+                )
+            except Exception as e:
+                log(f"❌ Error during fade-in: {e}")
+                log_alarm_probe(probe, "execute_fade_error", extra={"error": str(e)}, force=True)
+            if fade_silenced:
+                # The user hit pause/mute mid-ramp: don't fight it — start the
+                # snooze countdown now instead of on the monitor's next poll.
+                log_alarm_probe(probe, "execute_fade_snoozed", force=True)
+                try:
+                    trigger_snooze(token)
+                except Exception as snooze_err:
+                    log(f"⚠️ Could not trigger snooze after silenced fade: {snooze_err}")
 
         # Auto-disable single-use alarms only. Recurring alarms (weekdays set)
         # stay enabled so they fire again on the next selected day.

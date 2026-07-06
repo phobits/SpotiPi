@@ -5,6 +5,12 @@ All notable changes to SpotiPi will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.7] - 2026-07-06
+
+### 🐛 Fixed
+- **Snooze presses during the fade-in no longer bounce back.** Pressing the hardware snooze button (which mutes the device) shortly after the alarm rang was overridden within ≤5s by the next fade-in volume step, so the alarm appeared to restart immediately; only a press after the ~45s ramp stuck. The fade loop now reads the player between steps and, on two consecutive silenced reads, stops ramping and hands over to the snooze session (visible as the forced `execute_fade_snoozed` probe). Both silence paths are latch-gated against the stale reads Spotify serves right after playback starts: a mute only counts after an audible volume read (no false snooze from 0%-preset echoes), a pause only after a confirmed playing read.
+- **Snooze session arms right after playback starts** (before the fade-in) instead of after it, and the new `snooze.trigger_snooze()` entry point starts the snooze countdown at the button press instead of on the monitor's next poll (up to 60s later in low-power mode). The monitor's startup settle window now also begins at the real playback start. Fade silence detection only runs while a session is actually armed (with snooze disabled the ramp is never aborted — nothing could resume it), and `_arm_snooze` now guards against the fade trigger and the monitor racing on the same press (no double pause / shifted resume time).
+
 ## [1.12.6] - 2026-06-29
 
 Mobile-focused UI polish from Phase 1 of the UX/frontend review — CSS-only, no behavior changes.

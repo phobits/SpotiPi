@@ -194,6 +194,67 @@ def test_arm_snooze_pauses_playback(temp_status, monkeypatch):
     assert snooze.get_snooze_status()["state"] == "snoozing"
 
 
+def test_arm_snooze_noop_when_already_snoozing(temp_status, monkeypatch):
+    # Fade trigger and monitor debounce can race on the same press: the loser
+    # must not pause again or push resume_at later.
+    monkeypatch.setattr(
+        snooze, "stop_playback",
+        lambda *args, **kwargs: pytest.fail("must not pause again while snoozing"),
+    )
+    now = time.time()
+    live = {
+        "active": True, "state": "snoozing", "window_end": now + 3600,
+        "device_id": "dev1", "resume_at": now + 120, "snooze_minutes": 9,
+    }
+    snooze._write_status(live)
+    stale_armed = dict(live, state="armed", resume_at=0)
+    snooze._arm_snooze("tok", stale_armed)
+    assert snooze._read_status_from_disk()["resume_at"] == pytest.approx(now + 120, abs=1)
+
+
+def test_trigger_snooze_arms_immediately(temp_status, monkeypatch):
+    paused_calls = []
+    monkeypatch.setattr(
+        snooze, "stop_playback",
+        lambda token, device_id=None: paused_calls.append((token, device_id)) or True,
+    )
+    now = time.time()
+    snooze._write_status({
+        "active": True, "state": "armed", "window_end": now + 3600,
+        "device_id": "dev1", "device_name": "Forte", "snooze_minutes": 9, "snooze_count": 0,
+    })
+    assert snooze.trigger_snooze("tok") is True
+    status = snooze.get_snooze_status()
+    assert status["state"] == "snoozing"
+    assert 530 <= status["resume_in_seconds"] <= 540  # ~9 min from the press
+    assert paused_calls == [("tok", "dev1")]
+
+
+def test_trigger_snooze_without_session(temp_status):
+    assert snooze.trigger_snooze("tok") is False
+
+
+def test_trigger_snooze_window_elapsed(temp_status):
+    snooze._write_status({
+        "active": True, "state": "armed", "window_end": time.time() - 1,
+    })
+    assert snooze.trigger_snooze("tok") is False
+
+
+def test_trigger_snooze_already_snoozing_keeps_resume_at(temp_status, monkeypatch):
+    monkeypatch.setattr(
+        snooze, "stop_playback",
+        lambda *args, **kwargs: pytest.fail("must not pause again while snoozing"),
+    )
+    now = time.time()
+    snooze._write_status({
+        "active": True, "state": "snoozing", "window_end": now + 3600,
+        "resume_at": now + 120, "snooze_minutes": 9,
+    })
+    assert snooze.trigger_snooze("tok") is True
+    assert snooze._read_status_from_disk()["resume_at"] == pytest.approx(now + 120, abs=1)
+
+
 def test_do_resume_full_volume_and_rearm(temp_status, monkeypatch):
     calls = {}
     sequence = []

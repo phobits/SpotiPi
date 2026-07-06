@@ -250,6 +250,30 @@ def stop_snooze_session() -> bool:
         return False
 
 
+def trigger_snooze(token: Optional[str] = None) -> bool:
+    """Put the active session into "snoozing" immediately (external trigger).
+
+    The alarm's fade-in loop calls this when it detects the user silencing the
+    alarm mid-ramp: the snooze countdown then starts at the button press
+    instead of up to ``ARMED_INTERVAL`` * ``PAUSE_DEBOUNCE_READS`` later on
+    the monitor's polls. Returns True if a session is now snoozing.
+    """
+    try:
+        data = _get_status_snapshot(force_refresh=True)
+        if not data.get("active"):
+            return False
+        window_end = data.get("window_end") or 0
+        if window_end and time.time() >= window_end:
+            return False
+        if data.get("state") == "snoozing":
+            return True
+        _arm_snooze(token or get_access_token() or refresh_access_token(), data)
+        return True
+    except Exception:
+        logger.exception("Error triggering snooze")
+        return False
+
+
 def maybe_resume_snooze_monitor() -> bool:
     """Re-spawn the monitor on app startup if a session survived a restart.
 
@@ -461,7 +485,7 @@ def _monitor_snooze(epoch: int) -> None:
         logger.info("💤 Snooze monitor thread exiting (epoch=%d)", epoch)
 
 
-def _arm_snooze(token: str, status: Dict[str, Any]) -> None:
+def _arm_snooze(token: Optional[str], status: Dict[str, Any]) -> None:
     """Transition armed -> snoozing, pause playback, and schedule the next resume.
 
     Writes the snoozing status first (authoritative) so the resume still fires
@@ -470,6 +494,14 @@ def _arm_snooze(token: str, status: Dict[str, Any]) -> None:
     churning silently through the playlist for the whole snooze window. Pausing an
     already-paused stream (legacy pause button) is a harmless no-op.
     """
+    # The fade-loop trigger and the monitor's own debounce can race on the
+    # same button press: re-check the live state so the loser no-ops instead
+    # of pausing twice and pushing resume_at later (or resurrecting a session
+    # that was dismissed in the meantime).
+    current = _get_status_snapshot(force_refresh=True)
+    if not current.get("active") or current.get("state") == "snoozing":
+        return
+
     snooze_minutes = int(status.get("snooze_minutes", 9) or 9)
     resume_at = time.time() + snooze_minutes * 60
     new_status = dict(status)
@@ -479,11 +511,13 @@ def _arm_snooze(token: str, status: Dict[str, Any]) -> None:
     logger.info("💤 Silence detected (pause/mute) - snoozing for %d min", snooze_minutes)
 
     device_id = status.get("device_id")
-    if device_id:
+    if device_id and token:
         try:
             stop_playback(token, device_id)
         except Exception as exc:
             logger.debug("💤 Snooze arm: pause request failed: %s", exc)
+    elif device_id:
+        logger.warning("💤 Snooze arm: no token - stream stays un-paused (muted playback keeps running)")
 
 
 def _set_state_armed(status: Dict[str, Any]) -> None:
