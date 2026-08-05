@@ -55,7 +55,15 @@ cp scripts/deploy_to_pi.sh.example scripts/deploy_to_pi.sh  # first time only
   `CHANGELOG.md` entry. The frontend footer reads it from the server-injected bootstrap payload
   (`bootstrap.app.version`, set in `src/routes/main.py` from `version.py`), and the `/healthz`
   endpoint returns it — no frontend rebuild needed for a version change.
-- **Post-push deploy:** run `./scripts/deploy_to_pi.sh` (local copy of `deploy_to_pi.sh.example`).
+- **Post-push deploy: reserved for a human — `/ship` must NOT run it.** Report the deploy as pending
+  and stop there. `scripts/deploy_to_pi.sh` is a git-ignored per-machine copy of
+  `deploy_to_pi.sh.example`, so a fix in the tracked example says nothing about the copy on *this*
+  Mac. That exact gap has clobbered the Pi's live `config/production.json` twice (2026-06-15, and
+  again on 2026-06-17 when a stale local copy lacked the `--exclude=config/*.json` lines) — the
+  alarm was wiped both times, and the live values were never in git, so recovery meant re-entering
+  them by hand in the web UI. Before deploying, verify by eye that the local script carries both
+  `--exclude=config/production.json` and `--exclude=config/development.json`, then run it yourself.
+  Lift this reservation only once the deploy script is hardened and no longer per-machine.
 
 ## Architecture
 
