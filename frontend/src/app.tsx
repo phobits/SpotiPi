@@ -722,14 +722,28 @@ function useListboxDropdown() {
 
   const handleFocusOut = useCallback((e: JSX.TargetedFocusEvent<HTMLDivElement>) => {
     const nextTarget = e.relatedTarget as Node | null;
-    // No relatedTarget: iOS Safari does not focus a tapped <button>, so tapping an
-    // option blurs the focused one into nothing. Closing here would unmount the
-    // option before its click fires. Outside taps are handled by pointerdown above;
-    // keyboard Tab-away always carries a relatedTarget.
+    // Belt and braces for iOS: a tap that blurs into nothing (no relatedTarget) must
+    // not close the list either; outside taps are closed by pointerdown above.
     if (!nextTarget || containerRef.current?.contains(nextTarget)) {
       return;
     }
     setOpen(false);
+  }, []);
+
+  // Safari (macOS and iOS) does not focus a clicked/tapped <button>; focus falls
+  // back to the nearest focusable ancestor (the sheet), so the focused option fires
+  // focusout -> close before the click lands: an option tap is lost, a trigger tap
+  // closes and then re-toggles open. Suppressing the mousedown default on the list
+  // keeps focus where it is; click (and keyboard) still work.
+  const suppressFocusSteal = useCallback((e: JSX.TargetedMouseEvent<HTMLElement>) => {
+    e.preventDefault();
+  }, []);
+
+  // The trigger still needs focus (its keydown handles Escape before the open effect
+  // has moved focus into the list), so focus it explicitly — Safari won't.
+  const handleTriggerMouseDown = useCallback((e: JSX.TargetedMouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    triggerRef.current?.focus();
   }, []);
 
   return {
@@ -741,6 +755,8 @@ function useListboxDropdown() {
     handleListKeyDown,
     handleTriggerKeyDown,
     handleFocusOut,
+    suppressFocusSteal,
+    handleTriggerMouseDown,
   };
 }
 
@@ -754,6 +770,8 @@ function CustomSelect({ value, options, onChange, id }: CustomSelectProps) {
     handleListKeyDown,
     handleTriggerKeyDown,
     handleFocusOut,
+    suppressFocusSteal,
+    handleTriggerMouseDown,
   } = useListboxDropdown();
 
   const selected = options.find((o) => o.value === value);
@@ -768,6 +786,7 @@ function CustomSelect({ value, options, onChange, id }: CustomSelectProps) {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={handleTriggerKeyDown}
+        onMouseDown={handleTriggerMouseDown}
       >
         <span>{selected?.label ?? value}</span>
         <span class={`device-dropdown-chevron ${open ? "is-open" : ""}`}>
@@ -775,7 +794,7 @@ function CustomSelect({ value, options, onChange, id }: CustomSelectProps) {
         </span>
       </button>
       {open ? (
-        <div class="device-dropdown-list" role="listbox" onKeyDown={handleListKeyDown}>
+        <div class="device-dropdown-list" role="listbox" onKeyDown={handleListKeyDown} onMouseDown={suppressFocusSteal}>
           {options.map((opt) => {
             const isSelected = opt.value === value;
             return (
@@ -821,6 +840,8 @@ function DevicePicker({
     handleListKeyDown,
     handleTriggerKeyDown,
     handleFocusOut,
+    suppressFocusSteal,
+    handleTriggerMouseDown,
   } = useListboxDropdown();
 
   const emptyMessage = offline
@@ -855,6 +876,7 @@ function DevicePicker({
               aria-expanded={open}
               onClick={() => setOpen((v) => !v)}
               onKeyDown={handleTriggerKeyDown}
+              onMouseDown={handleTriggerMouseDown}
             >
               <span class={selectedDevice ? "" : "device-dropdown-placeholder"}>
                 {selectedDevice
@@ -869,7 +891,7 @@ function DevicePicker({
               </span>
             </button>
             {open ? (
-              <div class="device-dropdown-list" role="listbox" onKeyDown={handleListKeyDown}>
+              <div class="device-dropdown-list" role="listbox" onKeyDown={handleListKeyDown} onMouseDown={suppressFocusSteal}>
                 {devices.map((device) => {
                   const key = device.id || device.name;
                   const isSelected =

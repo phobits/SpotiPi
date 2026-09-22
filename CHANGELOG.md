@@ -5,6 +5,11 @@ All notable changes to SpotiPi will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.10] - 2026-09-22
+
+### 🐛 Fixed
+- **Speaker (and other) dropdowns are actually tappable on iPhone now.** The v1.12.9 fix assumed iOS blurs a tapped option into nothing; in fact Safari (iOS and macOS) moves focus to the enclosing sheet, so the list still closed before the tap landed. The dropdown list now suppresses the `mousedown` default so tapping an option keeps focus where it is and the selection registers. The trigger focuses itself explicitly on `mousedown`, so tapping it while open closes the list cleanly (it used to close and immediately reopen in Safari) and Escape still closes only the list. Verified in WebKit (iPhone and desktop Safari profiles) against the live device.
+
 ## [1.12.9] - 2026-09-22
 
 ### 🐛 Fixed
