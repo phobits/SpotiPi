@@ -654,13 +654,15 @@ function useListboxDropdown() {
 
   useEffect(() => {
     if (!open) return;
-    function handleOutside(e: MouseEvent) {
+    // pointerdown, not mousedown: iOS Safari only synthesizes mousedown for taps on
+    // "clickable" elements, so taps on plain background would never close the list.
+    function handleOutside(e: PointerEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
       }
     }
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
+    document.addEventListener("pointerdown", handleOutside);
+    return () => document.removeEventListener("pointerdown", handleOutside);
   }, [open]);
 
   // On open, move focus to the selected option (or the first) so keyboard users
@@ -720,7 +722,11 @@ function useListboxDropdown() {
 
   const handleFocusOut = useCallback((e: JSX.TargetedFocusEvent<HTMLDivElement>) => {
     const nextTarget = e.relatedTarget as Node | null;
-    if (nextTarget && containerRef.current?.contains(nextTarget)) {
+    // No relatedTarget: iOS Safari does not focus a tapped <button>, so tapping an
+    // option blurs the focused one into nothing. Closing here would unmount the
+    // option before its click fires. Outside taps are handled by pointerdown above;
+    // keyboard Tab-away always carries a relatedTarget.
+    if (!nextTarget || containerRef.current?.contains(nextTarget)) {
       return;
     }
     setOpen(false);

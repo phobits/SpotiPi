@@ -5,6 +5,11 @@ All notable changes to SpotiPi will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.9] - 2026-09-22
+
+### 🐛 Fixed
+- **Speakers can be picked again on iPhone (Safari and home-screen app).** iOS does not focus a tapped button, so tapping an option in the speaker/select dropdowns blurred the focused option into nothing; the dropdown treated that as focus leaving and closed before the tap registered — nothing got selected and no alarm could be set (since v1.12.5). A `focusout` without a new focus target no longer closes the list; taps outside now close it via `pointerdown` (iOS does not reliably fire `mousedown` there). Keyboard Tab-away and Escape behave as before.
+
 ## [1.12.8] - 2026-09-22
 
 ### 🐛 Fixed
