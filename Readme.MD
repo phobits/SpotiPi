@@ -27,7 +27,7 @@ Smart Spotify alarm clock and sleep timer for Raspberry Pi.
 ## Quick Start (Local)
 
 ```bash
-git clone https://github.com/phobo-at/SpotiPi.git
+git clone https://github.com/phobits/SpotiPi.git
 cd SpotiPi
 python3 -m venv .venv
 source .venv/bin/activate
@@ -94,7 +94,7 @@ Local profile log files:
 On the Pi:
 
 ```bash
-git clone https://github.com/phobo-at/SpotiPi.git /home/pi/spotipi
+git clone https://github.com/phobits/SpotiPi.git /home/pi/spotipi
 cd /home/pi/spotipi
 python3 -m venv venv
 source venv/bin/activate

@@ -13,7 +13,7 @@ This guide focuses on practical contribution steps for this repository.
 ## Local Setup
 
 ```bash
-git clone https://github.com/phobo-at/SpotiPi.git
+git clone https://github.com/phobits/SpotiPi.git
 cd SpotiPi
 python3 -m venv .venv
 source .venv/bin/activate

@@ -64,7 +64,7 @@ On a fresh Pi/server the guided script handles packages, venv, `.env`, an option
 and the systemd units in one pass:
 
 ```bash
-git clone https://github.com/phobo-at/SpotiPi.git /home/pi/spotipi
+git clone https://github.com/phobits/SpotiPi.git /home/pi/spotipi
 cd /home/pi/spotipi
 ./deploy/install_fresh_pi.sh
 ```
@@ -397,7 +397,7 @@ For experienced users who need quick setup:
 
 ```bash
 # On the server: fresh guided install (packages, venv, .env, systemd units)
-git clone https://github.com/phobo-at/SpotiPi.git /home/pi/spotipi
+git clone https://github.com/phobits/SpotiPi.git /home/pi/spotipi
 cd /home/pi/spotipi
 ./deploy/install_fresh_pi.sh
 

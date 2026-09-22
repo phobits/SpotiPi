@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # -- Config -------------------------------------------------------------------
-REPO_URL="https://github.com/phobo-at/SpotiPi.git"
+REPO_URL="https://github.com/phobits/SpotiPi.git"
 INSTALL_DIR="/home/pi/spotipi"
 SECRETS_DIR="/home/pi/.spotipi"
 VENV_DIR="$INSTALL_DIR/venv"

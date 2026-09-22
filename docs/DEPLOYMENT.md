@@ -36,7 +36,7 @@ Mac Entwicklung              Raspberry Pi Produktion
 
 ### Aktuelle Git Remotes
 ```bash
-github  git@github.com:phobo-at/SpotiPi.git   # einziges Remote (Code + Backup)
+github  git@github.com:phobits/SpotiPi.git   # einziges Remote (Code + Backup)
 ```
 
 ---
@@ -49,7 +49,7 @@ Auf einem frischen Pi erledigt das geführte Skript Pakete, venv, `.env`, option
 Token und die systemd-Units in einem Durchlauf:
 
 ```bash
-git clone https://github.com/phobo-at/SpotiPi.git /home/pi/spotipi
+git clone https://github.com/phobits/SpotiPi.git /home/pi/spotipi
 cd /home/pi/spotipi
 ./deploy/install_fresh_pi.sh
 ```
@@ -380,7 +380,7 @@ Für erfahrene Benutzer, die das Setup erneut benötigen:
 
 ```bash
 # Auf dem Pi: frische, geführte Installation (Pakete, venv, .env, systemd-Units)
-git clone https://github.com/phobo-at/SpotiPi.git /home/pi/spotipi
+git clone https://github.com/phobits/SpotiPi.git /home/pi/spotipi
 cd /home/pi/spotipi
 ./deploy/install_fresh_pi.sh
 
