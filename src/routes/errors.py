@@ -20,30 +20,36 @@ def _build_template_context(config: Dict[str, Any], *, error_message: str) -> Di
     user_language = get_user_language(request)
     translations = get_translations(user_language)
 
-    def template_t(key, **kwargs):
-        from ..utils.translations import t
-        return t(key, user_language, **kwargs)
-
-    feature_flags = {
-        "sleep_timer": config.get("feature_sleep", False),
-        "music_library": config.get("feature_library", True),
-    }
+    # Error rendering must not call services or snapshots: those may be the
+    # source of the original failure. Reuse only the shell's pure payload builders.
+    from .main import (
+        LOW_POWER_MODE,
+        _build_dashboard_payload,
+        _build_settings_payload,
+        _build_sleep_defaults,
+    )
 
     return {
-        "error_message": error_message,
-        "config": config,
-        "devices": [],
-        "playlists": [],
-        "next_alarm_info": "",
-        "sleep_status": {},
-        "initial_state": {},
-        "feature_flags": feature_flags,
-        "t": template_t,
-        "translations": translations,
         "lang": user_language,
-        "now": datetime.datetime.now(),
         "app_info": get_app_info(),
         "version": VERSION,
+        "bootstrap": {
+            "language": user_language,
+            "translations": translations,
+            "low_power": LOW_POWER_MODE,
+            "app": {
+                "version": VERSION,
+                "info": get_app_info(),
+                "initial_surface": "home",
+                "now_iso": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            },
+            "dashboard": _build_dashboard_payload(
+                config, {}, {}, None, {}, None, {}, None, {}
+            ),
+            "settings": _build_settings_payload(config),
+            "sleep_defaults": _build_sleep_defaults(config),
+            "notifications": [{"type": "error", "message": error_message}],
+        },
     }
 
 
@@ -63,7 +69,7 @@ def register_error_handlers(app: Flask) -> None:
             config = load_config()
         except Exception:
             config = {}
-        context = _build_template_context(config, error_message=t_api("page_not_found"))
+        context = _build_template_context(config, error_message=t_api("page_not_found", request))
         return render_template("index.html", **context), 404
 
     @app.errorhandler(500)
@@ -79,5 +85,5 @@ def register_error_handlers(app: Flask) -> None:
             config = load_config()
         except Exception:
             config = {}
-        context = _build_template_context(config, error_message=t_api("internal_server_error_page"))
+        context = _build_template_context(config, error_message=t_api("internal_server_error_page", request))
         return render_template("index.html", **context), 500

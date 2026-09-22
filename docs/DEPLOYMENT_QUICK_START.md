@@ -300,7 +300,6 @@ sudo systemctl restart spotipi.service
 
 - **Vollständige Deployment-Anleitung:** `docs/DEPLOYMENT.md`
 - **Environment-Variablen:** `docs/ENVIRONMENT_VARIABLES.md`
-- **Performance-Optimierungen:** `docs/CODE_REVIEW_GAPS.md` (Section 5)
 - **Structured Logging:** `docs/JSON_LOGGING.md`
 - **HTTP Retry Logic:** `docs/SPOTIFY_API_RETRY.md`
 - **Config Validation:** `docs/CONFIG_SCHEMA_VALIDATION.md`

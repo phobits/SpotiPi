@@ -5,6 +5,14 @@ All notable changes to SpotiPi will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.8] - 2026-09-22
+
+### 🐛 Fixed
+- **Browser error pages (404/500) render a valid app shell.** The error handler now builds the same `bootstrap` payload as the main page from the pure payload builders only — no service or snapshot calls, which may be the very cause of the failure — and surfaces the error as a notification in the user's language (Accept-Language is now honoured for the message too). API errors keep their JSON envelope. Covered by `tests/test_error_pages.py`.
+
+### 📝 Docs
+- Removed the obsolete `docs/CODE_REVIEW_GAPS.md` and `docs/ROADMAP_CONFIG_MANAGEMENT.md` (and the dangling link in `docs/DEPLOYMENT_QUICK_START.md`).
+
 ## [1.12.7] - 2026-07-06
 
 ### 🐛 Fixed
