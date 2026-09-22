@@ -36,7 +36,7 @@ cd spotipi
 #### 1.3 Update Git Remote (if required)
 ```bash
 # If repository URL needs to be changed
-git remote set-url origin git@github.com:phobits/spotipi.git
+git remote set-url origin git@github.com:phobits/SpotiPi.git
 ```
 
 #### 1.4 Activate New Path-Agnostic Scripts
