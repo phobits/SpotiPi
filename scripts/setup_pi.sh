@@ -277,6 +277,19 @@ if [ "${SPOTIPI_ENABLE_ALARM_TIMER:-1}" = "1" ]; then
   ok "spotipi-alarm.timer enabled"
 fi
 
+# Let deploy_to_pi.sh restart the service over non-interactive SSH (no TTY for a
+# sudo password). Scoped to exactly this one command — nothing else goes passwordless.
+SUDOERS_FILE="/etc/sudoers.d/spotipi-deploy"
+SUDOERS_TMP="$(mktemp)"
+echo "$(whoami) ALL=(root) NOPASSWD: $(command -v systemctl) restart spotipi.service" > "$SUDOERS_TMP"
+if sudo visudo -cf "$SUDOERS_TMP" >/dev/null; then
+  sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
+  ok "Passwordless 'systemctl restart spotipi.service' for deploys ($SUDOERS_FILE)"
+else
+  warn "sudoers rule failed validation — deploys will need a manual restart"
+fi
+rm -f "$SUDOERS_TMP"
+
 # Start service only if credentials are configured
 if [ "${NEEDS_CREDENTIALS:-true}" = true ]; then
   warn "NOT starting spotipi.service — credentials not configured yet"

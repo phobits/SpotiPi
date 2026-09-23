@@ -345,8 +345,11 @@ pip install -r requirements.txt --upgrade
 # Schneller Deployment Status
 ssh pi@spotipi.local "systemctl is-active spotipi.service && journalctl -u spotipi.service -n 5 --no-pager"
 
-# Remote Neustart
-ssh pi@spotipi.local "sudo systemctl restart spotipi.service"
+# Remote Neustart (ohne Passwort dank /etc/sudoers.d/spotipi-deploy, siehe scripts/setup_pi.sh)
+ssh pi@spotipi.local "sudo -n systemctl restart spotipi.service"
+
+# Regel auf einem vor 2026-09 eingerichteten Pi einmalig nachziehen (fragt nach dem Passwort)
+ssh -t pi@spotipi.local 'echo "pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart spotipi.service" | sudo EDITOR="tee" visudo -f /etc/sudoers.d/spotipi-deploy'
 
 # App Erreichbarkeit prüfen
 curl -s -o /dev/null -w "%{http_code}" http://spotipi.local:5000

@@ -25,6 +25,12 @@
       "name": "Schlafzimmer",
       "requested_name": "Schlafzimmer",
       "updated_at": 1782685508.495441
+    },
+    "wohnzimmer": {
+      "id": "4a0f4f2f6981b7654487a051bb92c3e31e02318b",
+      "name": "Wohnzimmer",
+      "requested_name": "Wohnzimmer",
+      "updated_at": 1790139122.520575
     }
   },
   "language": "en",

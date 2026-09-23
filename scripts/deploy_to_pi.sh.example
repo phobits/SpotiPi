@@ -311,11 +311,14 @@ fi
 # Restart service on Pi
 if [ -n "$SERVICE_NAME" ]; then
   echo "🔄 Restarting service: $SERVICE_NAME"
-  if ssh "$PI_HOST" "sudo systemctl restart $SERVICE_NAME"; then
+  # sudo -n: fail fast instead of waiting for a password over a TTY-less SSH session.
+  # The passwordless rule for exactly this command is installed by scripts/setup_pi.sh.
+  if ssh "$PI_HOST" "sudo -n systemctl restart $SERVICE_NAME"; then
     echo "✅ Service restarted successfully"
   else
     echo "❌ Failed to restart service"
-    echo "💡 Check status: ssh $PI_HOST 'sudo systemctl status $SERVICE_NAME'"
+    echo "💡 If sudo asked for a password, the /etc/sudoers.d/spotipi-deploy rule is missing (see scripts/setup_pi.sh)."
+    echo "💡 Restart by hand: ssh -t $PI_HOST 'sudo systemctl restart $SERVICE_NAME'"
     exit 1
   fi
 fi
