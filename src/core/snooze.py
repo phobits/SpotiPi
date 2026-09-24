@@ -31,6 +31,7 @@ actively plays something else (different context/device), the session ends
 can be stopped explicitly via :func:`stop_snooze_session`.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -41,6 +42,7 @@ from typing import Any, Dict, Optional
 from ..api.spotify import (get_access_token, get_current_playback,
                            refresh_access_token, set_volume, start_playback,
                            stop_playback)
+from .alarm_logging import log_snooze_probe
 
 # Detect low-power mode once for module-wide optimisations
 LOW_POWER_MODE = os.getenv('SPOTIPI_LOW_POWER', '').lower() in ('1', 'true', 'yes', 'on')
@@ -233,17 +235,24 @@ def start_snooze_session(
             "💤 Snooze session armed: device=%s window=%dmin snooze=%dmin",
             device_name, window_minutes, snooze_minutes,
         )
+        log_snooze_probe("session_started", {
+            "device_name": device_name,
+            "window_minutes": window_minutes,
+            "snooze_minutes": snooze_minutes,
+            "volume": volume,
+        })
         return True
     except Exception:
         logger.exception("Error starting snooze session")
         return False
 
 
-def stop_snooze_session() -> bool:
+def stop_snooze_session(reason: str = "user") -> bool:
     """Stop the active snooze session (dismiss). Idempotent."""
     try:
         _write_status({"active": False})
-        logger.info("🛑 Snooze session stopped")
+        logger.info("🛑 Snooze session stopped (%s)", reason)
+        log_snooze_probe("session_stopped", {"reason": reason})
         return True
     except Exception:
         logger.exception("Error stopping snooze session")
@@ -267,7 +276,7 @@ def trigger_snooze(token: Optional[str] = None) -> bool:
             return False
         if data.get("state") == "snoozing":
             return True
-        _arm_snooze(token or get_access_token() or refresh_access_token(), data)
+        _arm_snooze(token or get_access_token() or refresh_access_token(), data, source="fade_trigger")
         return True
     except Exception:
         logger.exception("Error triggering snooze")
@@ -398,7 +407,7 @@ def _monitor_snooze(epoch: int) -> None:
             window_end = status.get("window_end") or 0
             if window_end and now >= window_end:
                 logger.info("💤 Snooze window elapsed - ending session")
-                stop_snooze_session()
+                stop_snooze_session("window_elapsed")
                 return
 
             token = get_access_token() or refresh_access_token()
@@ -422,6 +431,14 @@ def _monitor_snooze(epoch: int) -> None:
 
             if state == "snoozing":
                 resume_at = status.get("resume_at") or 0
+                _pb_device = (playback or {}).get("device") or {}
+                log_snooze_probe("snoozing_poll", {
+                    "is_playing": (playback or {}).get("is_playing"),
+                    "volume": _pb_device.get("volume_percent"),
+                    "device": _pb_device.get("name"),
+                    "context_uri": ((playback or {}).get("context") or {}).get("uri"),
+                    "resume_in_s": round(resume_at - now, 1),
+                })
                 if now >= resume_at:
                     _do_resume(token, status)
                     pause_streak = 0
@@ -433,11 +450,12 @@ def _monitor_snooze(epoch: int) -> None:
                 if playback and bool(playback.get("is_playing")):
                     if _device_matches(playback, device_id, device_name) and _context_matches(playback, playlist_uri):
                         logger.info("💤 Manual resume detected during snooze - re-arming")
+                        log_snooze_probe("manual_resume_rearm", {"resume_in_s": round(resume_at - now, 1)})
                         _set_state_armed(status)
                         pause_streak = 0
                     else:
                         logger.info("💤 Other playback during snooze - dismissing snooze session")
-                        stop_snooze_session()
+                        stop_snooze_session("other_playback_during_snooze")
                         return
                 # else: still paused, keep waiting.
                 interval = min(SNOOZING_INTERVAL, max(5, int(resume_at - now)))
@@ -462,6 +480,16 @@ def _monitor_snooze(epoch: int) -> None:
                 verdict, (playback or {}).get("is_playing"),
                 _device.get("volume_percent"), _device.get("name"), settled, seen_playing,
             )
+            log_snooze_probe("armed_poll", {
+                "verdict": verdict,
+                "is_playing": (playback or {}).get("is_playing"),
+                "volume": _device.get("volume_percent"),
+                "device": _device.get("name"),
+                "context_uri": ((playback or {}).get("context") or {}).get("uri"),
+                "settled": settled,
+                "seen_playing": seen_playing,
+                "pause_streak": pause_streak,
+            })
             if verdict == "playing":
                 seen_playing = True
                 pause_streak = 0
@@ -470,7 +498,7 @@ def _monitor_snooze(epoch: int) -> None:
                 pause_streak = 0
             elif verdict == "takeover":
                 logger.info("💤 Foreign playback detected (device/context changed) - dismissing snooze")
-                stop_snooze_session()
+                stop_snooze_session("takeover")
                 return
             else:  # "paused" – silenced via pause or mute
                 pause_streak += 1
@@ -485,7 +513,7 @@ def _monitor_snooze(epoch: int) -> None:
         logger.info("💤 Snooze monitor thread exiting (epoch=%d)", epoch)
 
 
-def _arm_snooze(token: Optional[str], status: Dict[str, Any]) -> None:
+def _arm_snooze(token: Optional[str], status: Dict[str, Any], source: str = "monitor") -> None:
     """Transition armed -> snoozing, pause playback, and schedule the next resume.
 
     Writes the snoozing status first (authoritative) so the resume still fires
@@ -511,13 +539,27 @@ def _arm_snooze(token: Optional[str], status: Dict[str, Any]) -> None:
     logger.info("💤 Silence detected (pause/mute) - snoozing for %d min", snooze_minutes)
 
     device_id = status.get("device_id")
+    pause_ok: Optional[bool] = None
     if device_id and token:
         try:
-            stop_playback(token, device_id)
+            pause_ok = bool(stop_playback(token, device_id))
         except Exception as exc:
+            pause_ok = False
             logger.debug("💤 Snooze arm: pause request failed: %s", exc)
     elif device_id:
         logger.warning("💤 Snooze arm: no token - stream stays un-paused (muted playback keeps running)")
+    log_snooze_probe("snoozed", {
+        "source": source,
+        "snooze_minutes": snooze_minutes,
+        "resume_at_local": _local_iso(resume_at),
+        "snooze_count": int(status.get("snooze_count", 0)),
+        "pause_ok": pause_ok,
+    })
+
+
+def _local_iso(ts: float) -> str:
+    """Epoch seconds -> local ISO time for probe events."""
+    return datetime.datetime.fromtimestamp(ts).astimezone().isoformat()
 
 
 def _set_state_armed(status: Dict[str, Any]) -> None:
@@ -558,6 +600,13 @@ def _do_resume(token: str, status: Dict[str, Any]) -> None:
     new_status["resume_at"] = 0
     new_status["snooze_count"] = int(status.get("snooze_count", 0)) + 1
     _write_status(new_status)
+    resume_at = status.get("resume_at") or 0
+    log_snooze_probe("resumed", {
+        "volume": volume,
+        "started": bool(started),
+        "snooze_count": new_status["snooze_count"],
+        "late_s": round(time.time() - resume_at, 1) if resume_at else None,
+    })
 
     if started:
         logger.info("💤 Snooze resume: playback restarted at %d%% (count=%d)", volume, new_status["snooze_count"])

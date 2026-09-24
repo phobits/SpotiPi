@@ -132,15 +132,48 @@ def test_fade_verdict_read_error_is_unknown(monkeypatch):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(alarm, "get_current_playback", boom)
-    verdict, seen, heard = alarm._fade_playback_verdict("tok", DEVICE_ID, DEVICE_NAME, True, True)
+    verdict, seen, heard, info = alarm._fade_playback_verdict("tok", DEVICE_ID, DEVICE_NAME, True, True)
     assert verdict == "unknown"
     assert (seen, heard) == (True, True)
+    assert info == {"read_error": "network down"}
 
 
 def test_fade_verdict_device_without_volume_control(monkeypatch):
     # volume_percent None -> no mute signal; only a pause can silence.
     monkeypatch.setattr(alarm, "get_current_playback", lambda token: _playing(None))
-    verdict, seen, heard = alarm._fade_playback_verdict("tok", DEVICE_ID, DEVICE_NAME, False, False)
+    verdict, seen, heard, info = alarm._fade_playback_verdict("tok", DEVICE_ID, DEVICE_NAME, False, False)
     assert verdict == "active"
+    assert info["volume"] is None and info["device_match"] is True
     assert seen is True
     assert heard is False
+
+
+def test_fade_logs_every_read_to_probe(fade_env, monkeypatch):
+    # Each mid-fade read lands in the probe log (the only journald-visible
+    # logger on the Pi), so an overridden button press can be reconstructed.
+    events: List[Any] = []
+    monkeypatch.setattr(
+        alarm, "log_alarm_probe",
+        lambda probe, state, extra=None, force=False: events.append((state, extra)),
+    )
+    fade_env["reads"] = [_playing(0), _playing(5), _playing(0)]
+    assert _run(fade_env) is True
+
+    reads = [extra for state, extra in events if state == "execute_fade_read"]
+    assert [r["volume"] for r in reads] == [0, 5, 0, 0]
+    assert [r["verdict"] for r in reads] == ["active", "active", "silenced", "silenced"]
+    assert [r["next_volume"] for r in reads] == [5, 10, 15, 15]
+    assert reads[2]["silence_streak"] == 0 and reads[3]["silence_streak"] == 1
+
+
+def test_fade_refused_step_is_probed(fade_env, monkeypatch):
+    events: List[Any] = []
+    monkeypatch.setattr(
+        alarm, "log_alarm_probe",
+        lambda probe, state, extra=None, force=False: events.append((state, extra)),
+    )
+    monkeypatch.setattr(alarm, "set_volume", lambda token, volume, device_id: False)
+    fade_env["reads"] = [_playing(10)]
+    _run(fade_env)
+    refused = [extra for state, extra in events if state == "execute_fade_step_refused"]
+    assert [r["volume"] for r in refused] == ALL_STEPS

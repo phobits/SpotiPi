@@ -5,6 +5,14 @@ All notable changes to SpotiPi will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.11] - 2026-09-24
+
+### 🐛 Fixed
+- **Fade-in alarm no longer starts loud.** The speaker could ignore the 0% preset and start the stream at its own last volume; the volume was only reset after the ~6 s playback verification, so the alarm blasted before the fade began. The alarm now re-asserts its start volume right after `/play` and on every verification read that reports a different volume. UI play, sleep timer and snooze resume are unchanged.
+
+### 🔍 Diagnostics
+- **Fade-in and snooze are now fully traceable in journald.** New probe events for the playback start (`execute_play_*`), every fade-in player read (`execute_fade_read`, `execute_fade_step_refused`) and the snooze monitor (`snooze_probe`: polls, snooze/resume with lateness, manual-resume re-arm, stop reason). Groundwork for the "snooze press overridden by the next fade step" and snooze-timing reports.
+
 ## [1.12.10] - 2026-09-22
 
 ### 🐛 Fixed

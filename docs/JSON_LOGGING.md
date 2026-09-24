@@ -72,6 +72,12 @@ Environment="SPOTIPI_JSON_LOGS=1"
 journalctl -u spotipi.service --since "2025-11-04 06:00" | grep "alarm_probe"
 ```
 
+On the Pi only the `alarm_probe` logger reaches journald. Besides the scheduler states it carries
+(since v1.12.11) the playback start (`execute_play_verify_read`, `execute_play_volume_enforced`),
+every fade-in read (`execute_fade_read`: reported volume, verdict, next step) and the snooze
+monitor as `"kind": "snooze_probe"` events (`snooze_state`: `session_started`, `armed_poll`,
+`snoozing_poll`, `snoozed`, `manual_resume_rearm`, `resumed`, `session_stopped`).
+
 **Extract JSON logs with `jq`:**
 ```bash
 journalctl -u spotipi.service -o json | jq 'select(.MESSAGE | contains("alarm_id"))'

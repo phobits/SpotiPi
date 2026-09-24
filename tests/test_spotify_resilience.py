@@ -81,11 +81,11 @@ def test_play_with_retry_uses_fallback_device(monkeypatch):
     """When primary device fails, fallback device should be attempted."""
     attempts = []
 
-    def fake_start(token, device_id, playlist_uri, volume_percent, shuffle):
+    def fake_start(token, device_id, playlist_uri, volume_percent, shuffle, **kwargs):
         attempts.append(device_id)
         return device_id != "primary"
 
-    def fake_verify(token, device_id, playlist_uri, attempts=2, wait_seconds=0.5):
+    def fake_verify(token, device_id, playlist_uri, attempts=2, wait_seconds=0.5, **kwargs):
         return device_id == "fallback"
 
     monkeypatch.setattr(spotify, "_start_playback_on_device", fake_start)
@@ -105,6 +105,130 @@ def test_play_with_retry_uses_fallback_device(monkeypatch):
 
     assert success is True
     assert attempts == ["primary", "fallback"]
+
+
+class _Resp:
+    def __init__(self, status_code=204):
+        self.status_code = status_code
+        self.text = ""
+
+
+def _record_start_calls(monkeypatch):
+    """Stub the HTTP layer of _start_playback_on_device and record the call order."""
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append("play" if "/me/player/play" in url else "transfer")
+        return _Resp(204)
+
+    def fake_set_volume(token, volume_percent, device_id=None):
+        calls.append(("volume", volume_percent))
+        return True
+
+    monkeypatch.setattr(spotify, "_spotify_request", fake_request)
+    monkeypatch.setattr(spotify, "set_volume", fake_set_volume)
+    return calls
+
+
+def test_start_playback_enforce_volume_resets_right_after_play(monkeypatch):
+    # Some speakers ignore the preset and start at their own last volume:
+    # the fade alarm re-asserts 0% immediately after /play.
+    calls = _record_start_calls(monkeypatch)
+    events = []
+    ok = spotify._start_playback_on_device(
+        "tok", "dev1", "spotify:track:x", 0, False,
+        enforce_volume=True, trace=lambda e, d: events.append((e, d)),
+    )
+    assert ok is True
+    assert calls == ["transfer", ("volume", 0), "play", ("volume", 0)]
+    assert [e for e, _ in events] == ["play_sent", "volume_enforced"]
+    assert events[1][1]["phase"] == "after_play"
+
+
+def test_start_playback_without_enforce_keeps_single_preset(monkeypatch):
+    calls = _record_start_calls(monkeypatch)
+    assert spotify._start_playback_on_device("tok", "dev1", "spotify:track:x", 50, False) is True
+    assert calls == ["transfer", ("volume", 50), "play"]
+
+
+def _verify_reads(monkeypatch, reads):
+    script = list(reads)
+    monkeypatch.setattr(spotify, "get_current_playback", lambda token: script.pop(0) if len(script) > 1 else script[0])
+
+
+def test_verify_enforces_expected_volume_and_traces(monkeypatch):
+    volumes = []
+    monkeypatch.setattr(spotify, "set_volume", lambda t, v, d=None: volumes.append((v, d)) or True)
+    loud = {"is_playing": True, "device": {"id": "dev1", "volume_percent": 45},
+            "context": {"uri": "spotify:playlist:p"}, "progress_ms": 900}
+    _verify_reads(monkeypatch, [None, loud])
+    events = []
+    ok = spotify._verify_playback_state(
+        "tok", "dev1", "spotify:playlist:p", attempts=3, wait_seconds=0.2,
+        expected_volume=0, trace=lambda e, d: events.append((e, d)),
+    )
+    assert ok is True
+    assert volumes == [(0, "dev1")]
+    assert [e for e, _ in events] == ["verify_read", "verify_read", "volume_enforced"]
+    assert events[0][1]["empty"] is True
+    assert events[1][1]["volume"] == 45
+    assert events[2][1]["seen"] == 45
+
+
+def test_verify_leaves_volume_alone_when_matching_or_not_requested(monkeypatch):
+    volumes = []
+    monkeypatch.setattr(spotify, "set_volume", lambda t, v, d=None: volumes.append(v) or True)
+    quiet = {"is_playing": True, "device": {"id": "dev1", "volume_percent": 0},
+             "context": {"uri": "spotify:playlist:p"}}
+    _verify_reads(monkeypatch, [quiet])
+    assert spotify._verify_playback_state("tok", "dev1", "spotify:playlist:p", expected_volume=0) is True
+    loud = dict(quiet, device={"id": "dev1", "volume_percent": 45})
+    _verify_reads(monkeypatch, [loud])
+    assert spotify._verify_playback_state("tok", "dev1", "spotify:playlist:p") is True
+    # Foreign device reads never trigger an enforce either.
+    foreign = dict(quiet, device={"id": "other", "volume_percent": 45})
+    _verify_reads(monkeypatch, [foreign])
+    assert spotify._verify_playback_state("tok", "dev1", "spotify:playlist:p", attempts=2, expected_volume=0) is False
+    assert volumes == []
+
+
+def test_play_with_retry_threads_enforce_and_trace(monkeypatch):
+    seen = {}
+
+    def fake_start(token, device_id, playlist_uri, volume_percent, shuffle, **kwargs):
+        seen["start"] = kwargs
+        return True
+
+    def fake_verify(token, device_id, playlist_uri, **kwargs):
+        seen["verify"] = kwargs
+        return True
+
+    monkeypatch.setattr(spotify, "_start_playback_on_device", fake_start)
+    monkeypatch.setattr(spotify, "_verify_playback_state", fake_verify)
+    monkeypatch.setattr(spotify, "ensure_token_valid", lambda *a, **k: "token")
+    monkeypatch.setattr(spotify, "set_volume", lambda *a, **k: True)
+    events = []
+    trace = lambda e, d: events.append(e)
+
+    assert spotify.start_playback("tok", "dev1", "spotify:playlist:p", volume_percent=0,
+                                  enforce_volume=True, trace=trace) is True
+    assert seen["start"] == {"enforce_volume": True, "trace": trace}
+    assert seen["verify"] == {"expected_volume": 0, "trace": trace}
+    assert "verified" in events
+
+    assert spotify.start_playback("tok", "dev1", "spotify:playlist:p", volume_percent=50) is True
+    assert seen["verify"]["expected_volume"] is None
+
+
+def test_trace_errors_never_break_playback(monkeypatch):
+    _record_start_calls(monkeypatch)
+
+    def broken_trace(event, data):
+        raise RuntimeError("probe logger down")
+
+    assert spotify._start_playback_on_device(
+        "tok", "dev1", "spotify:track:x", 0, False, enforce_volume=True, trace=broken_trace,
+    ) is True
 
 
 def test_save_token_atomically_sets_permissions_in_plaintext_mode(monkeypatch, temp_token_path):

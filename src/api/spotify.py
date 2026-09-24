@@ -20,7 +20,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import requests
 from dotenv import load_dotenv
@@ -1742,14 +1742,40 @@ def get_device_id(token: str, device_name: str) -> Optional[str]:
     return None
 
 # ▶️ Playback
+
+# Optional observer for the playback start sequence: called as trace(event, data).
+# The alarm passes one that forwards to its probe log (the only logger that
+# reaches journald on the Pi); everyone else passes None.
+PlaybackTrace = Callable[[str, Dict[str, Any]], None]
+
+
+def _emit_trace(trace: Optional[PlaybackTrace], event: str, data: Dict[str, Any]) -> None:
+    """Call the trace observer; diagnostics must never break playback."""
+    if trace is None:
+        return
+    try:
+        trace(event, data)
+    except Exception as exc:
+        logging.getLogger('spotify').debug("playback trace failed: %s", exc)
+
+
 def _start_playback_on_device(
     token: str,
     device_id: str,
     playlist_uri: str,
     volume_percent: int,
     shuffle: bool,
+    *,
+    enforce_volume: bool = False,
+    trace: Optional[PlaybackTrace] = None,
 ) -> bool:
-    """Issue the sequence of Spotify API calls to start playback on a device."""
+    """Issue the sequence of Spotify API calls to start playback on a device.
+
+    With ``enforce_volume`` the volume is set again right after ``/play``: some
+    Connect speakers ignore the preset on an idle device and start the stream
+    at their own last volume (a fade-in alarm then blasted for the whole
+    verification window before the post-verify reset caught it).
+    """
     logger = logging.getLogger('spotify')
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -1811,9 +1837,18 @@ def _start_playback_on_device(
     if play_resp.status_code not in (200, 202, 204):
         logger.warning("❌ Error starting playback: %s", play_resp.text)
         _invalidate_playback_cache()
+        _emit_trace(trace, "play_failed", {"status": play_resp.status_code})
         return False
 
     _invalidate_playback_cache()
+    _emit_trace(trace, "play_sent", {"status": play_resp.status_code, "volume": volume_percent})
+    if enforce_volume:
+        try:
+            ok = set_volume(token, volume_percent, device_id)
+        except Exception as exc:
+            logger.debug("Post-play volume enforce failed: %s", exc)
+            ok = False
+        _emit_trace(trace, "volume_enforced", {"phase": "after_play", "volume": volume_percent, "ok": ok})
     return True
 
 
@@ -1859,8 +1894,16 @@ def _verify_playback_state(
     playlist_uri: str,
     attempts: int = PLAYBACK_VERIFY_ATTEMPTS,
     wait_seconds: float = PLAYBACK_VERIFY_WAIT,
+    *,
+    expected_volume: Optional[int] = None,
+    trace: Optional[PlaybackTrace] = None,
 ) -> bool:
-    """Poll the player API to ensure playback is active on the expected device."""
+    """Poll the player API to ensure playback is active on the expected device.
+
+    With ``expected_volume`` every read that shows our device at a different
+    volume re-asserts it, so a speaker that restored its own volume on stream
+    start is corrected within one poll instead of after verification.
+    """
     logger = logging.getLogger('spotify')
     context_uri_expected = playlist_uri if playlist_uri and not playlist_uri.startswith("spotify:track:") else None
 
@@ -1871,6 +1914,9 @@ def _verify_playback_state(
             logger.debug("verify_playback fetch failed: %s", exc)
             playback = None
 
+        if not playback:
+            _emit_trace(trace, "verify_read", {"attempt": attempt, "empty": True})
+
         if playback:
             device_info = playback.get("device") or {}
             active_device_id = device_info.get("id")
@@ -1878,7 +1924,35 @@ def _verify_playback_state(
             item_uri = item.get("uri")
             is_playing = bool(playback.get("is_playing"))
             progress_ms = playback.get("progress_ms") or 0
-            if expected_device_id and active_device_id != expected_device_id:
+            device_match = not expected_device_id or active_device_id == expected_device_id
+            reported_volume = device_info.get("volume_percent")
+            _emit_trace(trace, "verify_read", {
+                "attempt": attempt,
+                "is_playing": is_playing,
+                "volume": reported_volume,
+                "device_match": device_match,
+                "context_uri": (playback.get("context") or {}).get("uri"),
+                "progress_ms": progress_ms,
+            })
+            if (
+                expected_volume is not None
+                and device_match
+                and reported_volume is not None
+                and reported_volume != expected_volume
+            ):
+                try:
+                    ok = set_volume(token, expected_volume, expected_device_id)
+                except Exception as exc:
+                    logger.debug("verify_playback volume enforce failed: %s", exc)
+                    ok = False
+                _emit_trace(trace, "volume_enforced", {
+                    "phase": "verify",
+                    "attempt": attempt,
+                    "seen": reported_volume,
+                    "volume": expected_volume,
+                    "ok": ok,
+                })
+            if not device_match:
                 logger.debug(
                     "Playback active on unexpected device %s (expected %s)",
                     active_device_id,
@@ -1914,8 +1988,15 @@ def play_with_retry(
     shuffle: bool = False,
     *,
     fallback_device: Optional[str] = None,
+    enforce_volume: bool = False,
+    trace: Optional[PlaybackTrace] = None,
 ) -> bool:
-    """Start playback with retries, verification, and optional fallback device."""
+    """Start playback with retries, verification, and optional fallback device.
+
+    ``enforce_volume`` re-asserts ``volume_percent`` right after ``/play`` and on
+    every verification read that disagrees (see ``_start_playback_on_device``);
+    ``trace`` observes the sequence for diagnostics.
+    """
     logger = logging.getLogger('spotify')
 
     if not token or not device_id:
@@ -1957,12 +2038,26 @@ def play_with_retry(
                     playlist_uri,
                     volume_percent,
                     shuffle,
+                    enforce_volume=enforce_volume,
+                    trace=trace,
                 )
                 if not started:
                     raise RuntimeError("playback_start_failed")
 
-                if _verify_playback_state(token, target_device_id, playlist_uri):
+                if _verify_playback_state(
+                    token,
+                    target_device_id,
+                    playlist_uri,
+                    expected_volume=volume_percent if enforce_volume else None,
+                    trace=trace,
+                ):
                     elapsed = time.perf_counter() - start_time
+                    _emit_trace(trace, "verified", {
+                        "device_id": target_device_id,
+                        "attempt": attempt,
+                        "fallback": is_fallback,
+                        "elapsed_s": round(elapsed, 3),
+                    })
                     try:
                         if not set_volume(token, volume_percent, target_device_id):
                             logger.debug(
@@ -2000,6 +2095,7 @@ def play_with_retry(
                         "waited_seconds": round(PLAYBACK_VERIFY_ATTEMPTS * PLAYBACK_VERIFY_WAIT, 2),
                     },
                 )
+                _emit_trace(trace, "unverified", {"device_id": target_device_id, "attempt": attempt})
             except requests.exceptions.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
                 if status not in (429, 500, 502, 503, 504):
@@ -2070,6 +2166,9 @@ def start_playback(
     playlist_uri: str = "",
     volume_percent: int = 50,
     shuffle: bool = False,
+    *,
+    enforce_volume: bool = False,
+    trace: Optional[PlaybackTrace] = None,
 ) -> bool:
     """Backward-compatible wrapper that delegates to play_with_retry."""
     return play_with_retry(
@@ -2078,6 +2177,8 @@ def start_playback(
         playlist_uri=playlist_uri,
         volume_percent=volume_percent,
         shuffle=shuffle,
+        enforce_volume=enforce_volume,
+        trace=trace,
     )
 
 # --- Track count caching for random offset (playlist/album) ---

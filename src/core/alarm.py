@@ -12,7 +12,7 @@ Handles alarm triggering, weekday scheduling, and playback management with:
 import datetime
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.spotify import (get_access_token, get_current_playback,
                            get_device_id, set_volume, start_playback)
@@ -52,10 +52,11 @@ def _fade_playback_verdict(
     device_name: str,
     seen_playing: bool,
     heard_audible: bool,
-) -> Tuple[str, bool, bool]:
+) -> Tuple[str, bool, bool, Dict[str, Any]]:
     """Read the player once mid-fade and classify it.
 
-    Returns ``(verdict, seen_playing, heard_audible)`` with verdict one of:
+    Returns ``(verdict, seen_playing, heard_audible, info)`` — ``info`` is the
+    raw read (for the probe log) — with verdict one of:
         "silenced" -> the alarm device was paused (after having been seen
                       playing) or muted (after having been heard audible —
                       the hardware snooze button mutes)
@@ -78,21 +79,29 @@ def _fade_playback_verdict(
         playback = get_current_playback(token)
     except Exception as exc:
         logger.debug("Fade silence check failed: %s", exc)
-        return "unknown", seen_playing, heard_audible
+        return "unknown", seen_playing, heard_audible, {"read_error": str(exc)}
     if not playback:
-        return "unknown", seen_playing, heard_audible
-    if not _device_matches(playback, device_id, device_name):
-        return "unknown", seen_playing, heard_audible
-    if not bool(playback.get("is_playing")):
+        return "unknown", seen_playing, heard_audible, {"empty": True}
+    device = playback.get("device") or {}
+    volume = device.get("volume_percent")
+    is_playing = bool(playback.get("is_playing"))
+    info: Dict[str, Any] = {
+        "is_playing": is_playing,
+        "volume": volume,
+        "device": device.get("name"),
+        "device_match": _device_matches(playback, device_id, device_name),
+    }
+    if not info["device_match"]:
+        return "unknown", seen_playing, heard_audible, info
+    if not is_playing:
         if seen_playing:
-            return "silenced", seen_playing, heard_audible
-        return "unknown", seen_playing, heard_audible
-    volume = (playback.get("device") or {}).get("volume_percent")
+            return "silenced", seen_playing, heard_audible, info
+        return "unknown", seen_playing, heard_audible, info
     if volume is not None and volume > MUTE_THRESHOLD:
-        return "active", True, True
+        return "active", True, True, info
     if heard_audible and volume is not None:
-        return "silenced", True, heard_audible
-    return "active", True, heard_audible
+        return "silenced", True, heard_audible, info
+    return "active", True, heard_audible, info
 
 
 def _run_fade_in(
@@ -132,8 +141,24 @@ def _run_fade_in(
             time.sleep(1 if idx == 0 else FADE_STEP_SECONDS)
 
         if detect_silence:
-            verdict, seen_playing, heard_audible = _fade_playback_verdict(
+            verdict, seen_playing, heard_audible, info = _fade_playback_verdict(
                 token, device_id, device_name, seen_playing, heard_audible
+            )
+            # Every read goes to the probe log: a button press that the next
+            # step overrides (read still showed the old volume) is only
+            # visible as this read/step sequence.
+            log_alarm_probe(
+                probe,
+                "execute_fade_read",
+                extra={
+                    **info,
+                    "verdict": verdict,
+                    "seen_playing": seen_playing,
+                    "heard_audible": heard_audible,
+                    "silence_streak": silence_streak,
+                    "next_volume": volumes[idx],
+                },
+                force=True,
             )
             if verdict == "silenced":
                 silence_streak += 1
@@ -153,6 +178,12 @@ def _run_fade_in(
             )
         else:
             log(f"⚠️ Volume set attempt to {v}% - Spotify API refused value")
+            log_alarm_probe(
+                probe,
+                "execute_fade_step_refused",
+                extra={"volume": v, "step_index": idx},
+                force=True,
+            )
         idx += 1
 
     return False
@@ -370,13 +401,20 @@ def execute_alarm(
             },
         )
 
+        # Volume is enforced through the start: the speaker may ignore the
+        # preset and start at its own last volume (loud before a fade-in).
+        def play_trace(event: str, data: Dict[str, Any]) -> None:
+            log_alarm_probe(probe, f"execute_play_{event}", extra=data, force=True)
+
         if not fade_in:
             start_playback(
                 token,
                 device_id,
                 config.get("playlist_uri", ""),
                 volume_percent=target_volume,
-                shuffle=shuffle
+                shuffle=shuffle,
+                enforce_volume=True,
+                trace=play_trace,
             )
             log(f"▶️ Playback started directly with {target_volume}% alarm volume")
         else:
@@ -385,7 +423,9 @@ def execute_alarm(
                 device_id,
                 config.get("playlist_uri", ""),
                 volume_percent=initial_volume,
-                shuffle=shuffle
+                shuffle=shuffle,
+                enforce_volume=True,
+                trace=play_trace,
             )
             log("▶️ Playback started at 0% volume (Fade-In active)")
 

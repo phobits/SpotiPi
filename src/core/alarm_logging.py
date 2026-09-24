@@ -195,3 +195,26 @@ def log_alarm_probe(
             except TypeError:
                 serializable_event[key] = str(value)
         _probe_logger.info(json.dumps(serializable_event, ensure_ascii=True, sort_keys=True))
+
+
+def log_snooze_probe(state: str, extra: Optional[Dict[str, Any]] = None) -> None:
+    """Emit a snooze-monitor event on the probe logger.
+
+    The snooze module runs without an ``AlarmProbeContext`` (its monitor
+    outlives the alarm run), but its events must reach journald too — the
+    regular 'snooze' logger does not on the Pi. Never raises.
+    """
+    try:
+        now_utc = _dt.datetime.now(tz=_dt.timezone.utc)
+        event: Dict[str, Any] = {
+            "kind": "snooze_probe",
+            "snooze_state": state,
+            "now_utc": now_utc.isoformat(),
+            "now_local": now_utc.astimezone().isoformat(),
+            "monotonic_now": time.monotonic(),
+        }
+        if extra:
+            event.update(extra)
+        _probe_logger.info(json.dumps(event, ensure_ascii=True, sort_keys=True, default=str))
+    except Exception:
+        pass

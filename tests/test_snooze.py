@@ -14,6 +14,14 @@ from src.config_schema import SpotiPiConfig
 
 
 @pytest.fixture
+def snooze_probes(monkeypatch):
+    """Capture snooze probe events (journald-visible diagnostics)."""
+    events = []
+    monkeypatch.setattr(snooze, "log_snooze_probe", lambda state, extra=None: events.append((state, extra or {})))
+    return events
+
+
+@pytest.fixture
 def temp_status(tmp_path, monkeypatch):
     """Point the snooze status file at a temp path and reset the cache."""
     path = tmp_path / "snooze_status.json"
@@ -557,3 +565,52 @@ def test_save_alarm_persists_snooze_toggle(client):
     data = resp.get_json()
     assert data["success"] is True
     assert data["data"]["snooze_enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Probe events (journald-visible snooze diagnostics)
+# ---------------------------------------------------------------------------
+
+def test_probe_trigger_snooze_reports_source_and_pause(temp_status, monkeypatch, snooze_probes):
+    monkeypatch.setattr(snooze, "stop_playback", lambda token, device_id=None: True)
+    snooze._write_status(_armed_initial())
+    assert snooze.trigger_snooze("tok") is True
+    snoozed = [extra for state, extra in snooze_probes if state == "snoozed"]
+    assert len(snoozed) == 1
+    assert snoozed[0]["source"] == "fade_trigger"
+    assert snoozed[0]["pause_ok"] is True
+    assert snoozed[0]["snooze_minutes"] == 9
+    assert snoozed[0]["resume_at_local"]
+
+
+def test_probe_monitor_polls_and_resume(temp_status, monkeypatch, snooze_probes):
+    initial = _armed_initial(state="snoozing", resume_at=time.time() - 1)
+    _drive_monitor(monkeypatch, temp_status, initial, [None])
+    states = [state for state, _ in snooze_probes]
+    assert states[0] == "snoozing_poll"
+    resumed = [extra for state, extra in snooze_probes if state == "resumed"]
+    assert len(resumed) == 1
+    assert resumed[0]["started"] is True and resumed[0]["snooze_count"] == 1
+    assert resumed[0]["late_s"] >= 0
+    assert "armed_poll" in states
+
+
+def test_probe_monitor_manual_resume_and_takeover(temp_status, monkeypatch, snooze_probes):
+    ours = {"is_playing": True, "device": {"id": "dev1", "volume_percent": 20}, "context": {"uri": "spotify:playlist:p"}}
+    foreign = {"is_playing": True, "device": {"id": "other"}, "context": {"uri": "spotify:playlist:zzz"}}
+    initial = _armed_initial(state="snoozing", resume_at=time.time() + 300,
+                             alarm_started_at=time.time() - 600)
+    _drive_monitor(monkeypatch, temp_status, initial, [ours, foreign])
+    states = [state for state, _ in snooze_probes]
+    assert "manual_resume_rearm" in states
+    stopped = [extra for state, extra in snooze_probes if state == "session_stopped"]
+    assert stopped[0]["reason"] == "takeover"
+
+
+def test_probe_session_start_and_user_stop(temp_status, monkeypatch, snooze_probes):
+    monkeypatch.setattr(snooze, "_spawn_monitor", lambda: None)
+    assert snooze.start_snooze_session(device_id="dev1", device_name="Forte",
+                                       playlist_uri="spotify:playlist:p", volume=45) is True
+    assert snooze.stop_snooze_session() is True
+    assert [state for state, _ in snooze_probes] == ["session_started", "session_stopped"]
+    assert snooze_probes[1][1]["reason"] == "user"
