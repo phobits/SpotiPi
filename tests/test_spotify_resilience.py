@@ -220,6 +220,26 @@ def test_play_with_retry_threads_enforce_and_trace(monkeypatch):
     assert seen["verify"]["expected_volume"] is None
 
 
+def test_start_playback_without_volume_leaves_device_volume(monkeypatch):
+    # UI play passes no volume: the speaker keeps whatever the user set,
+    # instead of the old hardcoded 50% default.
+    calls = _record_start_calls(monkeypatch)
+    assert spotify._start_playback_on_device("tok", "dev1", "spotify:track:x", None, False) is True
+    assert calls == ["transfer", "play"]
+
+
+def test_play_with_retry_default_never_sets_volume(monkeypatch):
+    volumes = []
+    monkeypatch.setattr(spotify, "_start_playback_on_device", lambda *a, **k: True)
+    monkeypatch.setattr(spotify, "_verify_playback_state", lambda *a, **k: True)
+    monkeypatch.setattr(spotify, "ensure_token_valid", lambda *a, **k: "token")
+    monkeypatch.setattr(spotify, "set_volume", lambda t, v, d=None: volumes.append(v) or True)
+    assert spotify.start_playback("tok", "dev1", "spotify:playlist:p") is True
+    assert volumes == []
+    assert spotify.start_playback("tok", "dev1", "spotify:playlist:p", volume_percent=30) is True
+    assert volumes == [30]
+
+
 def test_trace_errors_never_break_playback(monkeypatch):
     _record_start_calls(monkeypatch)
 

@@ -1763,7 +1763,7 @@ def _start_playback_on_device(
     token: str,
     device_id: str,
     playlist_uri: str,
-    volume_percent: int,
+    volume_percent: Optional[int],
     shuffle: bool,
     *,
     enforce_volume: bool = False,
@@ -1775,6 +1775,7 @@ def _start_playback_on_device(
     Connect speakers ignore the preset on an idle device and start the stream
     at their own last volume (a fade-in alarm then blasted for the whole
     verification window before the post-verify reset caught it).
+    ``volume_percent=None`` leaves the device volume untouched.
     """
     logger = logging.getLogger('spotify')
     headers = {"Authorization": f"Bearer {token}"}
@@ -1792,11 +1793,12 @@ def _start_playback_on_device(
     except requests.exceptions.RequestException:
         raise
 
-    try:
-        if not set_volume(token, volume_percent, device_id):
-            logger.warning("⚠️ Could not preset volume to %s%%", volume_percent)
-    except Exception as exc:
-        logger.warning("⚠️ Error setting volume: %s", exc)
+    if volume_percent is not None:
+        try:
+            if not set_volume(token, volume_percent, device_id):
+                logger.warning("⚠️ Could not preset volume to %s%%", volume_percent)
+        except Exception as exc:
+            logger.warning("⚠️ Error setting volume: %s", exc)
 
     payload: Dict[str, Any] = {}
     playlist_uri = playlist_uri.strip()
@@ -1842,7 +1844,7 @@ def _start_playback_on_device(
 
     _invalidate_playback_cache()
     _emit_trace(trace, "play_sent", {"status": play_resp.status_code, "volume": volume_percent})
-    if enforce_volume:
+    if enforce_volume and volume_percent is not None:
         try:
             ok = set_volume(token, volume_percent, device_id)
         except Exception as exc:
@@ -1984,7 +1986,7 @@ def play_with_retry(
     token: str,
     device_id: str,
     playlist_uri: str = "",
-    volume_percent: int = 50,
+    volume_percent: Optional[int] = None,
     shuffle: bool = False,
     *,
     fallback_device: Optional[str] = None,
@@ -1993,6 +1995,8 @@ def play_with_retry(
 ) -> bool:
     """Start playback with retries, verification, and optional fallback device.
 
+    ``volume_percent=None`` (the default) plays at the device's current volume;
+    only callers that own a volume (alarm, snooze resume, sleep timer) pass one.
     ``enforce_volume`` re-asserts ``volume_percent`` right after ``/play`` and on
     every verification read that disagrees (see ``_start_playback_on_device``);
     ``trace`` observes the sequence for diagnostics.
@@ -2059,7 +2063,7 @@ def play_with_retry(
                         "elapsed_s": round(elapsed, 3),
                     })
                     try:
-                        if not set_volume(token, volume_percent, target_device_id):
+                        if volume_percent is not None and not set_volume(token, volume_percent, target_device_id):
                             logger.debug(
                                 "alarm.start.volume_postcheck_failed",
                                 extra={"device": target_device_id, "volume": volume_percent},
@@ -2164,7 +2168,7 @@ def start_playback(
     token: str,
     device_id: str,
     playlist_uri: str = "",
-    volume_percent: int = 50,
+    volume_percent: Optional[int] = None,
     shuffle: bool = False,
     *,
     enforce_volume: bool = False,

@@ -5,6 +5,11 @@ All notable changes to SpotiPi will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.12] - 2026-09-24
+
+### 🐛 Fixed
+- **Play from the UI keeps the speaker's volume.** Starting playback from the dashboard/library forced the speaker to 50% every time (a hardcoded default in `start_playback`). The volume is now optional: without one, playback starts at the device's current volume. Alarm, snooze resume and sleep timer still pass their own volume and are unchanged.
+
 ## [1.12.11] - 2026-09-24
 
 ### 🐛 Fixed
