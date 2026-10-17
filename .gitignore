@@ -93,3 +93,7 @@ test-results/
 docs/_build/
 docs/build/
 prototyping/
+
+# Docker (compose.yaml): local env file and data volumes
+spotipi.env
+data/
