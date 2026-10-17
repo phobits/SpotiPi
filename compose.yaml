@@ -1,0 +1,27 @@
+# SpotiPi with Docker: docker compose up -d --build (guide: Readme.MD, section "Docker Setup (Raspberry Pi 5)")
+# All mutable data lives in ./data (owned by UID 1000, see Readme).
+
+services:
+  spotipi:
+    image: spotipi:latest
+    build: .
+    container_name: spotipi
+    # Fixed hostname: the key for data/secrets/spotify_token.json is derived from hostname, USER and
+    # /etc/machine-id. Without fixed values the cached token would be unreadable after every re-create
+    # of the container (only a cache, but a needless token refresh on each start).
+    hostname: spotipi
+    env_file: spotipi.env  # FLASK_SECRET_KEY, timezone, overrides (template: spotipi.env.example)
+    ports:
+      - "5000:5000"  # change the left side for another port on the Pi, e.g. "5050:5000"
+    volumes:
+      - ./data/config:/app/config                 # production.json (alarm, device, volume)
+      - ./data/cache:/app/cache                   # scheduler state, library cache
+      - ./data/secrets:/home/spotipi/.spotipi     # .env (Spotify credentials written by the Settings UI), token cache
+      - /etc/machine-id:/etc/machine-id:ro        # binds the token key to the Pi, like the systemd installation
+      - /etc/localtime:/etc/localtime:ro          # the Pi's local time for log timestamps
+    restart: unless-stopped
+    # Hardening instead of a systemd sandbox: writes only to the volumes and /tmp, no capabilities
+    read_only: true
+    tmpfs: /tmp  # logs, sleep_status.json and snooze_status.json live under /tmp/spotipi_logs in production mode
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

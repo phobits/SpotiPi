@@ -116,6 +116,45 @@ Useful deploy flags:
 - `SPOTIPI_FORCE_SYSTEMD=1` forces systemd unit refresh
 - `SPOTIPI_PURGE_UNUSED=1` removes old/unneeded files on the Pi once
 
+## Docker Setup (Raspberry Pi 5)
+
+Runs SpotiPi as a hardened container (non-root, read-only filesystem, no capabilities) next to other
+containers such as Pi-hole. Requires Docker Engine with the Compose plugin on a 64-bit OS
+(Raspberry Pi OS Lite 64-bit). The systemd setup above keeps working unchanged.
+
+```bash
+git clone https://github.com/phobits/SpotiPi.git ~/spotipi
+cd ~/spotipi
+mkdir -p data/config data/cache data/secrets   # created by you, so UID 1000 owns them
+cp spotipi.env.example spotipi.env && chmod 600 spotipi.env
+python3 -c "import secrets; print(secrets.token_hex(32))"   # paste into FLASK_SECRET_KEY in spotipi.env
+docker compose up -d --build
+docker compose logs -f
+```
+
+Open `http://<pi-ip>:5000`, then enter the Spotify credentials under **Settings -> Spotify Account**
+and connect the account. Register `http://<pi-ip>:5000/api/settings/spotify/oauth/callback` as redirect
+URI in the Spotify Developer Dashboard (or pin it with `SPOTIPI_SPOTIFY_REDIRECT_URI`).
+
+What lives where:
+
+| Host path | Container path | Content |
+|---|---|---|
+| `data/config/` | `/app/config` | `production.json` (alarm, device, volume); `default_config.json` is re-copied from the image on every start |
+| `data/cache/` | `/app/cache` | scheduler state, library cache |
+| `data/secrets/` | `/home/spotipi/.spotipi` | `.env` with Spotify credentials (written by the Settings UI), token cache |
+| `spotipi.env` | env_file | `FLASK_SECRET_KEY`, timezone, performance overrides |
+
+Logs go to `docker logs`; `/tmp` is a tmpfs, so `sleep_status.json` and `snooze_status.json` reset on
+restart (same as a reboot of the systemd setup). The container port is fixed at 5000; change the host
+side in `compose.yaml` (`ports`). Update with `git pull && docker compose up -d --build`.
+
+Migrating from a systemd installation: copy the old `~/.spotipi/.env` to `data/secrets/.env` and
+`config/production.json` to `data/config/production.json`, then run `chmod 600 data/secrets/.env`.
+
+The daily alarm readiness probe (`spotipi-alarm.timer` in the systemd setup) is not part of the
+container. Run it on demand with `docker compose exec spotipi scripts/run_alarm.sh`.
+
 ## Configuration
 
 Spotify credentials can now be managed directly from **Settings -> Spotify Account**.

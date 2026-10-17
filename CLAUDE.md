@@ -33,6 +33,10 @@ npm run test:e2e                      # Playwright E2E tests
 # Deploy to Pi
 cp scripts/deploy_to_pi.sh.example scripts/deploy_to_pi.sh  # first time only
 ./scripts/deploy_to_pi.sh
+
+# Docker (Raspberry Pi 5, see Readme "Docker Setup")
+docker compose up -d --build          # Dockerfile + compose.yaml, data in ./data, env in spotipi.env
+pytest tests/test_docker_assets.py    # keeps Dockerfile/compose/entrypoint consistent
 ```
 
 ## Quality gates before finishing

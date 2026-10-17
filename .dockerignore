@@ -1,0 +1,15 @@
+# Only what the image needs (see COPY in the Dockerfile). Everything else stays out.
+*
+!requirements.txt
+!run.py
+!src/
+!static/
+!templates/
+!scripts/run_alarm.sh
+!config/default_config.json
+!deploy/docker/entrypoint.sh
+
+# Nothing local from the allowed directories
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
